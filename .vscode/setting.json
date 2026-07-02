@@ -1,0 +1,6 @@
+{
+  "rust-analyzer.linkedProjects": [
+    "rust-practice/Cargo.toml",
+    "hello world/src-tauri/Cargo.toml"
+  ]
+}
