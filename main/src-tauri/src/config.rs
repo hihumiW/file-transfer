@@ -8,6 +8,8 @@ use uuid::Uuid;
 
 use crate::models::RecentDevice;
 
+// AppConfig 是真正写入磁盘的本地配置。
+// 这里只保存跨启动需要记住的内容；运行期任务、pending 请求等临时状态不放进配置文件。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -19,6 +21,8 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    // load 负责读取配置文件；如果是首次启动，就创建一份带 device_id 的默认配置。
+    // device_id 使用 UUID v4，是因为它只需要本机稳定且随机，不依赖设备名、IP 或网卡信息。
     pub fn load() -> Result<Self, String> {
         let path = config_file_path()?;
         if !path.exists() {
@@ -35,6 +39,7 @@ impl AppConfig {
         let mut config: Self =
             serde_json::from_str(&content).map_err(|err| format!("解析配置失败: {err}"))?;
 
+        // 兼容异常配置：如果用户手动删掉 device_id，启动时重新补一个，避免协议字段为空。
         if config.device_id.trim().is_empty() {
             config.device_id = Uuid::new_v4().to_string();
             config.save()?;
@@ -43,6 +48,8 @@ impl AppConfig {
         Ok(config)
     }
 
+    // save 每次写完整 JSON，而不是做局部 patch。
+    // 对这个小配置文件来说，完整写入更简单，也更容易人工查看和调试。
     pub fn save(&self) -> Result<(), String> {
         let path = config_file_path()?;
         if let Some(parent) = path.parent() {
@@ -56,24 +63,30 @@ impl AppConfig {
     }
 }
 
+// config_dir 使用系统标准配置目录，避免把用户配置写进项目目录或安装目录。
 pub fn config_dir() -> Result<PathBuf, String> {
     let mut dir = dirs::config_dir().ok_or("无法定位系统配置目录".to_string())?;
     dir.push("LanTransfer");
     Ok(dir)
 }
 
+// config_file_path 只在本模块内部使用，统一决定配置文件名。
 fn config_file_path() -> Result<PathBuf, String> {
     let mut path = config_dir()?;
     path.push("config.json");
     Ok(path)
 }
 
+// default_save_dir 对应 PRD 中的默认保存目录：系统下载目录/LanTransfer。
+// 用户没有自定义保存目录时，AppState 会回退到这个路径。
 pub fn default_save_dir() -> Result<PathBuf, String> {
     let mut dir = dirs::download_dir().ok_or("无法定位系统下载目录".to_string())?;
     dir.push("LanTransfer");
     Ok(dir)
 }
 
+// ensure_writable_dir 是接收能力 receiveEnabled 的底层判断依据。
+// 它既会尝试创建目录，也会写入一个临时探针文件来验证当前用户真的有写权限。
 pub fn ensure_writable_dir(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path)
         .map_err(|err| format!("创建保存目录失败 {}: {err}", path.display()))?;

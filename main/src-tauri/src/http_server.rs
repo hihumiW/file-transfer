@@ -24,20 +24,27 @@ use crate::{
     transfer::AppState,
 };
 
+// HttpContext 是 axum handler 的共享上下文。
+// state 用来读写任务和配置，app 用来向本机 React 前端发送 Tauri event。
 #[derive(Clone)]
 struct HttpContext {
     state: Arc<AppState>,
     app: AppHandle,
 }
 
+// start_local_service 启动本机 HTTP 接收服务。
+// 它会从 DEFAULT_PORT 递增尝试到 MAX_PORT，成功后把实际端口写入 AppState.service。
 pub async fn start_local_service(state: Arc<AppState>, app: AppHandle) -> Result<(), String> {
     let mut last_error = None;
 
     for port in DEFAULT_PORT..=MAX_PORT {
+        // 监听 0.0.0.0 表示接收所有网卡上的连接；UI 展示的具体 IP 由 device.rs 负责推荐。
         let addr = SocketAddr::from(([0, 0, 0, 0], port));
         match TcpListener::bind(addr).await {
             Ok(listener) => {
                 state.set_service_running(port)?;
+                // Router 把 HTTP 路径映射到 handler。
+                // with_state 会把 HttpContext 克隆进每个请求，避免使用全局静态变量。
                 let router = Router::new()
                     .route("/api/device", get(api_device))
                     .route("/api/transfer/request", post(api_transfer_request))
@@ -48,6 +55,7 @@ pub async fn start_local_service(state: Arc<AppState>, app: AppHandle) -> Result
                     .route("/api/transfer/upload", post(api_transfer_upload))
                     .with_state(HttpContext { state, app });
 
+                // axum::serve 会一直运行，直到服务异常退出或应用进程结束。
                 axum::serve(listener, router)
                     .await
                     .map_err(|err| format!("本地接收服务异常退出: {err}"))?;
@@ -67,6 +75,8 @@ pub async fn start_local_service(state: Arc<AppState>, app: AppHandle) -> Result
     Err(message)
 }
 
+// api_device 对应 GET /api/device。
+// 发送方用它做连接测试，并确认协议版本、设备名和当前是否允许接收。
 async fn api_device(State(ctx): State<HttpContext>) -> impl IntoResponse {
     let config = ctx.state.config.lock().map(|guard| guard.clone());
     let save_dir = ctx.state.save_dir();
@@ -81,10 +91,14 @@ async fn api_device(State(ctx): State<HttpContext>) -> impl IntoResponse {
     }
 }
 
+// api_transfer_request 对应 POST /api/transfer/request。
+// 它只接收文件元数据，不接收文件内容；接收方确认后，发送方才会调用 upload 接口。
 async fn api_transfer_request(
     State(ctx): State<HttpContext>,
     Json(request): Json<TransferRequest>,
 ) -> impl IntoResponse {
+    // pending_transfer 是接收端的单任务门闩。
+    // 持有这个锁期间只做轻量判断和状态写入，避免阻塞其他请求太久。
     let mut pending_guard = match ctx.state.pending_transfer.lock() {
         Ok(guard) => guard,
         Err(_) => {
@@ -102,6 +116,8 @@ async fn api_transfer_request(
         }
     };
 
+    // v0.1 规定接收方同一时间只处理一个 pending/accepted/uploading 任务。
+    // 如果已有活跃任务，直接返回 receiver_busy，让发送方稍后再试。
     if pending_guard
         .as_ref()
         .map(|pending| {
@@ -122,6 +138,7 @@ async fn api_transfer_request(
         .into_response();
     }
 
+    // 接收请求阶段就检查保存目录，能在上传前失败，避免浪费网络和磁盘 I/O。
     if ctx.state.ensure_save_dir().is_err() {
         return Json(TransferRequestResponse {
             ok: false,
@@ -133,8 +150,10 @@ async fn api_transfer_request(
         .into_response();
     }
 
+    // transfer_id 由接收方生成，接收方是任务状态的权威来源。
     let transfer_id = Uuid::new_v4().to_string();
     let save_dir = ctx.state.save_dir().unwrap_or_default();
+    // 在确认前检查重名文件，让前端能展示“覆盖全部或取消”的选择。
     let duplicate_files = request
         .files
         .iter()
@@ -143,6 +162,7 @@ async fn api_transfer_request(
         .collect::<Vec<_>>();
     let peer_address = "unknown".to_string();
 
+    // PendingTransfer 用于驱动接收确认 UI。
     let pending = PendingTransfer {
         transfer_id: transfer_id.clone(),
         sender_device_id: request.sender_device_id.clone(),
@@ -156,6 +176,8 @@ async fn api_transfer_request(
         created_at: now_millis(),
     };
 
+    // TransferTask 用于右侧任务列表展示。
+    // 它和 pending 共用同一个 transfer_id，后续状态变化会同时更新两边。
     let task = TransferTask {
         id: transfer_id.clone(),
         direction: TransferDirection::Receive,
@@ -175,6 +197,7 @@ async fn api_transfer_request(
         tasks.push(task);
     }
 
+    // 通过 Tauri event 通知本机 React：有新的接收请求，需要展示确认弹窗。
     let _ = ctx.app.emit(
         "incoming-transfer",
         IncomingTransferEvent { transfer: pending },
@@ -190,10 +213,13 @@ async fn api_transfer_request(
     .into_response()
 }
 
+// api_transfer_status 对应 GET /api/transfer/status/:transferId。
+// 发送方会每秒轮询它，直到看到 accepted/rejected/failed 等终态或可上传状态。
 async fn api_transfer_status(
     State(ctx): State<HttpContext>,
     Path(transfer_id): Path<String>,
 ) -> impl IntoResponse {
+    // 状态优先从 pending_transfer 读取，因为它代表当前接收请求的最新确认状态。
     let status = ctx
         .state
         .pending_transfer
@@ -215,6 +241,7 @@ async fn api_transfer_status(
                 .map(|task| task.status)
         });
 
+    // 未找到 transfer_id 时返回 404，让发送方能把任务标记为失败。
     match status {
         Some(status) => Json(TransferStatusResponse {
             ok: true,
@@ -236,6 +263,8 @@ async fn api_transfer_status(
     }
 }
 
+// UploadQuery 对应 /api/transfer/upload?transferId=...&fileIndex=...
+// axum 的 Query extractor 会按 camelCase 解析前端/发送端传来的查询参数。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UploadQuery {
@@ -243,11 +272,14 @@ struct UploadQuery {
     file_index: usize,
 }
 
+// api_transfer_upload 对应 POST /api/transfer/upload。
+// 请求体 body 是文件内容的异步流，handler 会边收边写入保存目录。
 async fn api_transfer_upload(
     State(ctx): State<HttpContext>,
     Query(query): Query<UploadQuery>,
     body: Body,
 ) -> impl IntoResponse {
+    // 上传必须关联到一个已存在的 pending 任务，否则接收端不知道该保存到哪个任务。
     let pending = match ctx.state.pending_transfer.lock() {
         Ok(guard) => guard
             .as_ref()
@@ -260,6 +292,8 @@ async fn api_transfer_upload(
         return (StatusCode::NOT_FOUND, "transfer not found").into_response();
     };
 
+    // 只有用户确认接收后才允许上传。
+    // 这样能保证“发送请求”和“实际上传”这两个阶段严格分离。
     if !matches!(
         pending.status,
         TransferStatus::Accepted | TransferStatus::Uploading
@@ -267,10 +301,12 @@ async fn api_transfer_upload(
         return (StatusCode::CONFLICT, "transfer is not accepted").into_response();
     }
 
+    // file_index 由发送端按照待发送列表顺序传入，用来取对应文件名和大小。
     let Some(file_meta) = pending.files.get(query.file_index).cloned() else {
         return (StatusCode::BAD_REQUEST, "file index out of range").into_response();
     };
 
+    // 真正的保存逻辑放到 save_upload_stream，handler 只负责把成功/失败转成 HTTP 响应。
     match save_upload_stream(
         &ctx,
         &pending.transfer_id,
@@ -281,7 +317,9 @@ async fn api_transfer_upload(
     .await
     {
         Ok(()) => {
+            // 单文件写入完成后，累加任务总进度。
             mark_file_completed(&ctx.state, &pending.transfer_id, file_meta.size);
+            // 如果这是最后一个文件，整个多文件任务就可以进入 Completed。
             if query.file_index + 1 == pending.files.len() {
                 set_task_status(
                     &ctx.state,
@@ -298,6 +336,7 @@ async fn api_transfer_upload(
             StatusCode::OK.into_response()
         }
         Err(err) => {
+            // 任一文件保存失败都会让整个任务失败，符合 v0.1 的“全收或全失败”模型。
             set_task_status(
                 &ctx.state,
                 &pending.transfer_id,
@@ -309,6 +348,8 @@ async fn api_transfer_upload(
     }
 }
 
+// save_upload_stream 执行接收端最关键的流式写盘逻辑。
+// 它从 axum Body 中逐块读取字节，立即写入目标文件，并通过 Tauri event 汇报接收进度。
 async fn save_upload_stream(
     ctx: &HttpContext,
     transfer_id: &str,
@@ -316,8 +357,11 @@ async fn save_upload_stream(
     file_meta: &TransferFile,
     body: Body,
 ) -> Result<(), String> {
+    // 每次上传前重新 ensure_save_dir，可以覆盖用户运行中修改目录或目录被删除的情况。
     let save_dir = ctx.state.ensure_save_dir()?;
     let target_path = save_dir.join(&file_meta.name);
+    // File::create 会创建或截断目标文件。
+    // 是否允许覆盖在 transfer/request 阶段已经由 duplicate_files + overwrite_confirmed 决定。
     let mut file = File::create(&target_path)
         .await
         .map_err(|err| format!("创建文件失败 {}: {err}", target_path.display()))?;
@@ -335,6 +379,7 @@ async fn save_upload_stream(
             .map_err(|err| format!("写入文件失败 {}: {err}", target_path.display()))?;
         received += chunk.len() as u64;
 
+        // 接收端进度按当前文件计算；任务总进度会在 mark_file_completed 中按文件累加。
         let percent = if file_meta.size == 0 {
             100
         } else {
@@ -354,12 +399,15 @@ async fn save_upload_stream(
         );
     }
 
+    // flush 确保缓冲区内容尽量写入系统，及时暴露磁盘写入错误。
     file.flush()
         .await
         .map_err(|err| format!("刷新文件失败 {}: {err}", target_path.display()))?;
     Ok(())
 }
 
+// set_task_status 是跨模块共享的小工具，用同一个 transfer_id 同步任务列表和 pending_transfer。
+// 它被发送端轮询逻辑、接收确认逻辑和上传保存逻辑共同调用。
 pub fn set_task_status(
     state: &AppState,
     transfer_id: &str,
@@ -383,6 +431,8 @@ pub fn set_task_status(
     }
 }
 
+// mark_file_completed 在接收端每完成一个文件后累加总任务进度。
+// 使用 saturating_add 可以避免异常大小导致整数溢出。
 fn mark_file_completed(state: &AppState, transfer_id: &str, size: u64) {
     if let Ok(mut tasks) = state.tasks.lock() {
         if let Some(task) = tasks.iter_mut().find(|task| task.id == transfer_id) {

@@ -28,11 +28,15 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 
+// get_app_snapshot 是前端启动和刷新 UI 时最常调用的 command。
+// 它不修改状态，只把 Rust 当前掌握的设备、服务、任务和配置整理成一个 AppSnapshot。
 #[tauri::command]
 pub fn get_app_snapshot(state: State<'_, Arc<AppState>>) -> Result<AppSnapshot, String> {
     snapshot(&state)
 }
 
+// save_device_name 从前端接收用户输入的设备名，校验后写入本地配置。
+// 返回新的快照，是为了让前端保存成功后立刻刷新设备信息。
 #[tauri::command]
 pub fn save_device_name(
     state: State<'_, Arc<AppState>>,
@@ -50,6 +54,8 @@ pub fn save_device_name(
     snapshot(&state)
 }
 
+// select_display_ip 只改变 UI 展示和复制用的推荐地址。
+// 本地 HTTP 服务仍然监听 0.0.0.0，不会因为选择某个 IP 而缩小监听范围。
 #[tauri::command]
 pub fn select_display_ip(
     state: State<'_, Arc<AppState>>,
@@ -66,6 +72,8 @@ pub fn select_display_ip(
     snapshot(&state)
 }
 
+// choose_save_dir 打开系统目录选择器，并把用户选择的目录保存到配置中。
+// rfd 是跨平台文件对话框库；用户取消选择时返回当前快照，不视为错误。
 #[tauri::command]
 pub fn choose_save_dir(state: State<'_, Arc<AppState>>) -> Result<AppSnapshot, String> {
     let Some(folder) = rfd::FileDialog::new().pick_folder() else {
@@ -83,12 +91,16 @@ pub fn choose_save_dir(state: State<'_, Arc<AppState>>) -> Result<AppSnapshot, S
     snapshot(&state)
 }
 
+// open_save_dir 用系统文件管理器打开当前保存目录。
+// 打开前先 ensure_save_dir，保证目录不存在时会自动创建。
 #[tauri::command]
 pub fn open_save_dir(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let save_dir = state.ensure_save_dir()?;
     open_path(save_dir)
 }
 
+// choose_files 打开系统文件选择器，返回前端可展示和发送的 LocalFile 列表。
+// v0.1 允许多选文件，但目录会在发送前被拒绝。
 #[tauri::command]
 pub fn choose_files() -> Result<Vec<LocalFile>, String> {
     let Some(files) = rfd::FileDialog::new().pick_files() else {
@@ -101,6 +113,8 @@ pub fn choose_files() -> Result<Vec<LocalFile>, String> {
         .collect::<Result<Vec<_>, _>>()
 }
 
+// describe_paths 用于处理拖拽到窗口里的路径。
+// 前端只能拿到路径字符串，Rust 负责补齐文件名、大小、是否目录等元数据。
 #[tauri::command]
 pub fn describe_paths(paths: Vec<String>) -> Result<Vec<LocalFile>, String> {
     paths
@@ -110,11 +124,15 @@ pub fn describe_paths(paths: Vec<String>) -> Result<Vec<LocalFile>, String> {
         .collect::<Result<Vec<_>, _>>()
 }
 
+// normalize_target_address 暴露给前端做输入规范化。
+// 例如 192.168.1.23 会被转换成 http://192.168.1.23:7788。
 #[tauri::command]
 pub fn normalize_target_address(raw: String) -> Result<String, String> {
     normalize_address(&raw).map(|parsed| parsed.address)
 }
 
+// test_target_connection 是“测试连接”按钮的核心逻辑。
+// 它会请求目标设备 /api/device，校验协议版本和接收能力，成功后写入最近连接。
 #[tauri::command]
 pub async fn test_target_connection(
     state: State<'_, Arc<AppState>>,
@@ -126,6 +144,7 @@ pub async fn test_target_connection(
         .build()
         .map_err(|err| format!("创建 HTTP 客户端失败: {err}"))?;
 
+    // reqwest 是 Rust 端 HTTP 客户端；这里设置较短超时，避免 UI 长时间卡在连接测试。
     let response = client
         .get(format!("{}/api/device", parsed.address))
         .send()
@@ -147,6 +166,7 @@ pub async fn test_target_connection(
         return Err("对方设备当前不可接收文件".to_string());
     }
 
+    // TargetConnection 会返回给前端作为“当前发送目标”。
     let target = TargetConnection {
         device,
         address: parsed.address,
@@ -177,6 +197,8 @@ pub async fn test_target_connection(
     Ok(target)
 }
 
+// delete_recent_device 按 address 删除一条最近连接记录。
+// 删除后返回快照，前端无需手动维护本地列表副本。
 #[tauri::command]
 pub fn delete_recent_device(
     state: State<'_, Arc<AppState>>,
@@ -193,6 +215,8 @@ pub fn delete_recent_device(
     snapshot(&state)
 }
 
+// send_files 是发送文件的总入口，覆盖 v0.1 发送端完整流程：
+// 校验文件 -> 提交传输请求 -> 等待接收方确认 -> 顺序上传文件 -> 返回最新快照。
 #[tauri::command]
 pub async fn send_files(
     app: AppHandle,
@@ -207,6 +231,7 @@ pub async fn send_files(
         return Err("v0.1 暂不支持文件夹传输".to_string());
     }
 
+    // 目标地址每次发送前重新规范化，避免前端传入未补协议或端口的字符串。
     let parsed = normalize_address(&target_address)?;
     let local_device = {
         let config = state
@@ -217,6 +242,7 @@ pub async fn send_files(
         build_device_info(&config, &save_dir)
     };
 
+    // 发送请求只包含文件元数据；真正的文件内容会在接收方 accepted 后再上传。
     let transfer_files = files
         .iter()
         .map(|file| {
@@ -243,6 +269,7 @@ pub async fn send_files(
         total_bytes,
     };
 
+    // 第一步：向接收端提交传输请求，让接收端创建 pending 任务并弹出确认 UI。
     let response = client
         .post(format!("{}/api/transfer/request", parsed.address))
         .json(&request)
@@ -262,6 +289,7 @@ pub async fn send_files(
     let transfer_id = response
         .transfer_id
         .ok_or("对方未返回传输任务 ID".to_string())?;
+    // 发送端也创建一条本地任务，用同一个 transfer_id 关联后续进度和状态。
     let task = TransferTask {
         id: transfer_id.clone(),
         direction: TransferDirection::Send,
@@ -280,7 +308,9 @@ pub async fn send_files(
         tasks.push(task);
     }
 
+    // 第二步：轮询接收端状态。只有对方 accepted 后才进入真正上传。
     wait_until_accepted(&client, &parsed.address, &transfer_id, &state).await?;
+    // 第三步：按文件列表顺序逐个流式上传，符合 v0.1 不并发上传的设计。
     upload_files(
         &client,
         &app,
@@ -295,6 +325,8 @@ pub async fn send_files(
     snapshot(&state)
 }
 
+// respond_transfer 是接收方在确认弹窗点击“接收/拒绝”后调用的 command。
+// 它只修改本机 Rust 状态；发送方会通过轮询 /api/transfer/status 得知结果。
 #[tauri::command]
 pub fn respond_transfer(
     state: State<'_, Arc<AppState>>,
@@ -324,6 +356,7 @@ pub fn respond_transfer(
     snapshot(&state)
 }
 
+// clear_completed_tasks 只清理终态任务，不影响 pending/accepted/uploading 中的活跃任务。
 #[tauri::command]
 pub fn clear_completed_tasks(state: State<'_, Arc<AppState>>) -> Result<AppSnapshot, String> {
     {
@@ -338,6 +371,8 @@ pub fn clear_completed_tasks(state: State<'_, Arc<AppState>>) -> Result<AppSnaps
     snapshot(&state)
 }
 
+// snapshot 把多个 Mutex 保护的状态读出来，组装成前端需要的一份 AppSnapshot。
+// 读取时尽量短时间持锁，避免阻塞 HTTP handler 或其他 command 修改状态。
 fn snapshot(state: &Arc<AppState>) -> Result<AppSnapshot, String> {
     let config = state
         .config
@@ -347,6 +382,7 @@ fn snapshot(state: &Arc<AppState>) -> Result<AppSnapshot, String> {
     let save_dir = state.save_dir()?;
     let save_dir_available = ensure_writable_dir(&save_dir).is_ok();
     let addresses = list_network_addresses();
+    // 如果用户手动选过 IP 且它仍在候选列表中，就优先使用；否则回退到推荐地址。
     let selected_ip = addresses
         .iter()
         .find(|item| {
@@ -362,6 +398,8 @@ fn snapshot(state: &Arc<AppState>) -> Result<AppSnapshot, String> {
         .lock()
         .map_err(|_| "服务状态锁已损坏".to_string())?
         .clone();
+    // display_address 是给用户复制的地址，不能展示 0.0.0.0。
+    // 如果没有可用局域网 IP，就用 127.0.0.1 作为本机调试兜底。
     let display_address = selected_ip
         .as_ref()
         .map(|ip| format!("http://{}:{}", ip, service.port))
@@ -389,6 +427,8 @@ fn snapshot(state: &Arc<AppState>) -> Result<AppSnapshot, String> {
     })
 }
 
+// ParsedAddress 是 normalize_address 的内部返回值。
+// 对外展示用 address，最近连接和 UI 还需要拆开的 ip 与 port。
 #[derive(Debug)]
 struct ParsedAddress {
     address: String,
@@ -396,6 +436,8 @@ struct ParsedAddress {
     port: u16,
 }
 
+// normalize_address 实现 PRD 中的地址补全和校验规则。
+// v0.1 明确只支持 HTTP + IPv4，因此这里会拒绝 https 和域名。
 fn normalize_address(raw: &str) -> Result<ParsedAddress, String> {
     let input = raw.trim();
     if input.is_empty() {
@@ -428,6 +470,8 @@ fn normalize_address(raw: &str) -> Result<ParsedAddress, String> {
     })
 }
 
+// map_connection_error 把 reqwest 的底层错误翻译成更适合用户理解的中文提示。
+// 这里区分超时和连接失败，是为了分别提示“确认同局域网/应用已启动”和“检查端口/防火墙”。
 fn map_connection_error(err: &reqwest::Error) -> String {
     if err.is_timeout() {
         "连接超时，请确认对方设备已启动应用并处于同一局域网".to_string()
@@ -438,6 +482,8 @@ fn map_connection_error(err: &reqwest::Error) -> String {
     }
 }
 
+// local_file_from_path 从文件系统读取路径元数据。
+// 这一步只读取文件信息，不读取文件内容，因此对大文件也很轻量。
 fn local_file_from_path(path: PathBuf) -> Result<LocalFile, String> {
     let metadata = path
         .metadata()
@@ -453,6 +499,8 @@ fn local_file_from_path(path: PathBuf) -> Result<LocalFile, String> {
     })
 }
 
+// wait_until_accepted 是发送端等待接收方确认的轮询循环。
+// v0.1 不使用 WebSocket/SSE，所以每秒请求一次接收端状态接口。
 async fn wait_until_accepted(
     client: &Client,
     target: &str,
@@ -472,14 +520,17 @@ async fn wait_until_accepted(
 
         match response.status {
             TransferStatus::Accepted => {
+                // 接收方已确认，发送端本地任务进入 Uploading，随后开始上传文件内容。
                 set_task_status(state, transfer_id, TransferStatus::Uploading, None);
                 return Ok(());
             }
             TransferStatus::Rejected => {
+                // 接收方拒绝后，发送端任务进入 Rejected，并把错误返回给前端提示。
                 set_task_status(state, transfer_id, TransferStatus::Rejected, None);
                 return Err("对方已拒绝接收".to_string());
             }
             TransferStatus::Failed => {
+                // 如果接收方在确认阶段失败，发送端同步失败状态和对方返回的 message。
                 set_task_status(
                     state,
                     transfer_id,
@@ -495,6 +546,8 @@ async fn wait_until_accepted(
     }
 }
 
+// upload_files 按顺序上传多个文件。
+// 每个文件都会被转换成异步字节流，reqwest 边读边发，避免把完整文件读入内存。
 async fn upload_files(
     client: &Client,
     app: &AppHandle,
@@ -507,9 +560,12 @@ async fn upload_files(
     let mut transferred = 0_u64;
 
     for (index, file) in files.iter().enumerate() {
+        // tokio::fs::File 是异步文件句柄，适合和 reqwest/axum 这类异步网络库一起使用。
         let source = File::open(&file.path)
             .await
             .map_err(|err| format!("文件不可读取 {}: {err}", file.name))?;
+        // AtomicU64 用来在 stream 闭包里记录当前文件已发送字节数。
+        // 这里使用 Arc，是因为闭包需要拥有一份可跨异步边界共享的计数器。
         let sent_for_file = Arc::new(AtomicU64::new(0));
         let app_for_stream = app.clone();
         let state_for_stream = state.clone();
@@ -526,6 +582,7 @@ async fn upload_files(
         let stream = ReaderStream::new(source).map_ok(move |chunk| {
             let sent =
                 sent_for_file.fetch_add(chunk.len() as u64, Ordering::SeqCst) + chunk.len() as u64;
+            // transferred_before_file + sent 得到整个任务维度的已发送字节数。
             update_task_progress(
                 &state_for_stream,
                 &transfer_id_for_stream,
@@ -547,6 +604,7 @@ async fn upload_files(
             chunk
         });
 
+        // 这里把 transferId 和 fileIndex 放在 query 中，让接收端知道这个 body 属于哪个任务和第几个文件。
         client
             .post(format!(
                 "{target}/api/transfer/upload?transferId={transfer_id}&fileIndex={index}"
@@ -558,6 +616,7 @@ async fn upload_files(
             .error_for_status()
             .map_err(|err| format!("上传失败 {}: {err}", file.name))?;
 
+        // 单个文件请求完成后，再把任务总进度校准到该文件大小，避免 chunk 事件丢失导致进度不满。
         transferred = transferred.saturating_add(file.size).min(total_bytes);
         update_task_progress(state, transfer_id, transferred, total_bytes);
         let _ = app.emit(
@@ -578,6 +637,8 @@ async fn upload_files(
     Ok(())
 }
 
+// update_task_progress 只更新内存任务列表。
+// 前端看到进度主要依赖 transfer-progress 事件，后续 refresh 时也能从快照中读到一致状态。
 fn update_task_progress(state: &AppState, transfer_id: &str, transferred: u64, total: u64) {
     if let Ok(mut tasks) = state.tasks.lock() {
         if let Some(task) = tasks.iter_mut().find(|task| task.id == transfer_id) {
@@ -587,6 +648,8 @@ fn update_task_progress(state: &AppState, transfer_id: &str, transferred: u64, t
     }
 }
 
+// percent 使用 saturating_mul 避免极大文件大小相乘时整数溢出。
+// total 为 0 时按 100% 处理，兼容空文件传输。
 fn percent(done: u64, total: u64) -> u8 {
     if total == 0 {
         100
@@ -595,6 +658,8 @@ fn percent(done: u64, total: u64) -> u8 {
     }
 }
 
+// open_path 根据不同操作系统调用系统文件管理器打开目录。
+// 这里使用 Command::spawn 启动外部程序，Rust 进程不会等待文件管理器关闭。
 fn open_path(path: PathBuf) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let mut command = {

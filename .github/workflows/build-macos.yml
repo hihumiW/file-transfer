@@ -1,0 +1,57 @@
+# 这个工作流用于手动构建 macOS Apple Silicon 测试包。
+name: build-macos
+
+# 只允许手动触发，避免每次提交都消耗 macOS runner 时间。
+on:
+  workflow_dispatch:
+
+# 默认只给仓库内容读取权限；本工作流只上传 workflow artifacts，不创建 Release。
+permissions:
+  contents: read
+
+jobs:
+  build-apple-silicon:
+    # 使用 GitHub 托管的 macOS runner 来获得 macOS SDK 和打包工具链。
+    runs-on: macos-latest
+
+    steps:
+      # 第一步：拉取仓库代码，供后续安装依赖和构建 Tauri 应用使用。
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 第二步：安装 Node.js LTS，并基于 main/package-lock.json 缓存 npm 依赖。
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: main/package-lock.json
+
+      # 第三步：安装 Rust stable，并只添加 Apple Silicon 的 macOS 编译目标。
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      # 第四步：缓存 Rust 编译产物，减少重复手动构建时的等待时间。
+      - name: Cache Rust build output
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: main/src-tauri -> target
+
+      # 第五步：在 Tauri 项目目录中安装前端依赖，严格使用 package-lock.json。
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: main
+
+      # 第六步：构建 macOS Apple Silicon 包，并使用 ad-hoc signing 生成内部测试包。
+      - name: Build Tauri app for Apple Silicon
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: "-"
+        with:
+          projectPath: main
+          args: --target aarch64-apple-darwin
+          uploadWorkflowArtifacts: true
+          workflowArtifactNamePattern: macos-apple-silicon-[bundle]

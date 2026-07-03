@@ -37,6 +37,7 @@ export function useLanTransferApp() {
     const dragDropUnlisten = getCurrentWindow().onDragDropEvent(async (event) => {
       if (event.payload.type === "drop") {
         const dropped = await describePaths(event.payload.paths);
+        console.log(dropped, 'droped');
         store.addFiles(dropped);
       }
     });
