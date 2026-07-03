@@ -1,0 +1,91 @@
+@import "tailwindcss";
+@import "@heroui/styles";
+
+@theme {
+  --color-app-bg: #f6f7f9;
+
+  --color-surface: #ffffff;
+  --color-surface-muted: #f8fafc;
+  --color-surface-soft: #f1f5f9;
+
+  --color-border-subtle: #e5eaf0;
+  --color-border-control: #d8dee8;
+  --color-border-dropzone: #cbd5e1;
+
+  --color-fg-default: #111827;
+  --color-fg-muted: #64748b;
+  --color-fg-subtle: #94a3b8;
+  --color-fg-toast: #111827;
+
+  --color-primary: #2563eb;
+  --color-primary-strong: #1d4ed8;
+  --color-primary-soft: #eaf2ff;
+  --color-primary-hover: #eff6ff;
+  --color-focus: #0ea5ff;
+
+  --color-success: #22c55e;
+  --color-success-strong: #15803d;
+  --color-warning: #f97316;
+  --color-warning-soft: #fff7ed;
+  --color-warning-strong: #c2410c;
+  --color-danger: #ef4444;
+  --color-danger-strong: #dc2626;
+  --color-neutral: #94a3b8;
+}
+
+:root {
+  color: var(--color-fg-default);
+  background: var(--color-app-bg);
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "SF Pro Text",
+    "SF Pro Display",
+    "PingFang SC",
+    "Microsoft YaHei",
+    system-ui,
+    sans-serif;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 900px;
+  overflow: hidden;
+  background: var(--color-app-bg);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.text-ellipsis {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1023px) {
+  body {
+    overflow: auto;
+  }
+}
+
+@media (max-width: 899px) {
+  body {
+    min-width: 0;
+  }
+}
