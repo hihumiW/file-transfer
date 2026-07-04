@@ -339,26 +339,30 @@ pub fn respond_transfer(
     accept: bool,
     overwrite: bool,
 ) -> Result<AppSnapshot, String> {
-    let mut pending = state
-        .pending_transfer
-        .lock()
-        .map_err(|_| "接收任务锁已损坏".to_string())?;
-    let Some(item) = pending.as_mut() else {
-        return Err("没有待处理的接收请求".to_string());
+    let (transfer_id, next_status) = {
+        let mut pending = state
+            .pending_transfer
+            .lock()
+            .map_err(|_| "接收任务锁已损坏".to_string())?;
+        let Some(item) = pending.as_mut() else {
+            return Err("没有待处理的接收请求".to_string());
+        };
+
+        if accept {
+            if !item.duplicate_files.is_empty() && !overwrite {
+                return Err("存在重名文件，请确认是否覆盖".to_string());
+            }
+            item.overwrite_confirmed = true;
+            item.status = TransferStatus::Accepted;
+            (item.transfer_id.clone(), TransferStatus::Accepted)
+        } else {
+            item.status = TransferStatus::Rejected;
+            (item.transfer_id.clone(), TransferStatus::Rejected)
+        }
     };
 
-    if accept {
-        if !item.duplicate_files.is_empty() && !overwrite {
-            return Err("存在重名文件，请确认是否覆盖".to_string());
-        }
-        item.overwrite_confirmed = true;
-        item.status = TransferStatus::Accepted;
-        set_task_status(&state, &item.transfer_id, TransferStatus::Accepted, None);
-    } else {
-        item.status = TransferStatus::Rejected;
-        set_task_status(&state, &item.transfer_id, TransferStatus::Rejected, None);
-    }
-    drop(pending);
+    // set_task_status 会再次读取 pending_transfer；必须在上面的锁释放后再调用，避免自锁死。
+    set_task_status(&state, &transfer_id, next_status, None);
     snapshot(&state)
 }
 

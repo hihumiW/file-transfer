@@ -2,7 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{connect_info::ConnectInfo, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -56,7 +56,11 @@ pub async fn start_local_service(state: Arc<AppState>, app: AppHandle) -> Result
                     .with_state(HttpContext { state, app });
 
                 // axum::serve 会一直运行，直到服务异常退出或应用进程结束。
-                axum::serve(listener, router)
+                // 使用 ConnectInfo 把远端 socket 地址交给 handler，接收确认弹窗可以展示发送方 IP。
+                axum::serve(
+                    listener,
+                    router.into_make_service_with_connect_info::<SocketAddr>(),
+                )
                     .await
                     .map_err(|err| format!("本地接收服务异常退出: {err}"))?;
                 return Ok(());
@@ -94,6 +98,7 @@ async fn api_device(State(ctx): State<HttpContext>) -> impl IntoResponse {
 // api_transfer_request 对应 POST /api/transfer/request。
 // 它只接收文件元数据，不接收文件内容；接收方确认后，发送方才会调用 upload 接口。
 async fn api_transfer_request(
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     State(ctx): State<HttpContext>,
     Json(request): Json<TransferRequest>,
 ) -> impl IntoResponse {
@@ -157,7 +162,8 @@ async fn api_transfer_request(
         .filter(|file| save_dir.join(&file.name).exists())
         .map(|file| file.name.clone())
         .collect::<Vec<_>>();
-    let peer_address = "unknown".to_string();
+    // remote_addr 来自 TCP 连接本身，比请求体可信；UI 只展示 IP，避免临时端口造成干扰。
+    let peer_address = remote_addr.ip().to_string();
 
     // PendingTransfer 用于驱动接收确认 UI。
     let pending = PendingTransfer {
