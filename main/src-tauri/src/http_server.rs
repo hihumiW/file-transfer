@@ -365,11 +365,19 @@ async fn api_transfer_upload(
                     TransferStatus::Completed,
                     None,
                 );
-                if let Ok(mut guard) = ctx.state.pending_transfer.lock() {
-                    if let Some(item) = guard.as_mut() {
-                        item.status = TransferStatus::Completed;
-                    }
-                }
+                // 完成状态写入后再发一次事件，促使前端刷新到 completed，而不是停在最后一次 chunk 的 uploading。
+                let _ = ctx.app.emit(
+                    "transfer-progress",
+                    ProgressEvent {
+                        transfer_id: pending.transfer_id.clone(),
+                        file_name: file_meta.name.clone(),
+                        file_index: query.file_index + 1,
+                        file_total: pending.files.len(),
+                        transferred_bytes: pending.total_bytes,
+                        total_bytes: pending.total_bytes,
+                        percent: 100,
+                    },
+                );
             }
             StatusCode::OK.into_response()
         }

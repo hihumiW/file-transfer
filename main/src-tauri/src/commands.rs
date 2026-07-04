@@ -264,7 +264,8 @@ pub async fn send_files(
     let total_bytes = transfer_files.iter().map(|file| file.size).sum::<u64>();
 
     let client = Client::builder()
-        .timeout(Duration::from_secs(8))
+        // 大文件上传会让单个 HTTP 请求持续较久，不能沿用连接测试的短超时。
+        .timeout(Duration::from_secs(60 * 60))
         .build()
         .map_err(|err| format!("创建 HTTP 客户端失败: {err}"))?;
 
