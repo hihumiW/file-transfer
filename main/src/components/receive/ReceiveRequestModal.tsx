@@ -58,7 +58,7 @@ export function ReceiveRequestModal({ transfer, onRespond }: ReceiveRequestModal
         </div>
 
         {/* 底部只提供明确选择，不允许点击遮罩误关闭待确认请求。 */}
-        <footer className="grid grid-cols-2 gap-3 border-t border-border-subtle px-5 py-4">
+        <footer className="flex justify-end items-center gap-3 border-t border-border-subtle px-5 py-4">
           <Button variant="outline" onPress={() => onRespond(false)}>
             <X className="h-4 w-4" />
             拒绝
