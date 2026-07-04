@@ -97,10 +97,17 @@ async fn api_transfer_request(
     State(ctx): State<HttpContext>,
     Json(request): Json<TransferRequest>,
 ) -> impl IntoResponse {
-    // pending_transfer 是接收端的单任务门闩。
-    // 持有这个锁期间只做轻量判断和状态写入，避免阻塞其他请求太久。
-    let mut pending_guard = match ctx.state.pending_transfer.lock() {
-        Ok(guard) => guard,
+    // 第一步只短暂读取接收门闩，判断当前是否已有活跃任务。
+    let receiver_busy = match ctx.state.pending_transfer.lock() {
+        Ok(guard) => guard
+            .as_ref()
+            .map(|pending| {
+                matches!(
+                    pending.status,
+                    TransferStatus::Pending | TransferStatus::Accepted | TransferStatus::Uploading
+                )
+            })
+            .unwrap_or(false),
         Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -116,18 +123,8 @@ async fn api_transfer_request(
         }
     };
 
-    // v0.1 规定接收方同一时间只处理一个 pending/accepted/uploading 任务。
-    // 如果已有活跃任务，直接返回 receiver_busy，让发送方稍后再试。
-    if pending_guard
-        .as_ref()
-        .map(|pending| {
-            matches!(
-                pending.status,
-                TransferStatus::Pending | TransferStatus::Accepted | TransferStatus::Uploading
-            )
-        })
-        .unwrap_or(false)
-    {
+    // 第二步在不持有 pending_transfer 锁的情况下返回忙碌结果。
+    if receiver_busy {
         return Json(TransferRequestResponse {
             ok: false,
             transfer_id: None,
@@ -192,7 +189,42 @@ async fn api_transfer_request(
         created_at: pending.created_at,
     };
 
-    *pending_guard = Some(pending.clone());
+    // 最后再写入 pending_transfer，避免在持锁期间做目录检查、重名扫描和事件发送。
+    if let Ok(mut pending_guard) = ctx.state.pending_transfer.lock() {
+        if pending_guard
+            .as_ref()
+            .map(|pending| {
+                matches!(
+                    pending.status,
+                    TransferStatus::Pending | TransferStatus::Accepted | TransferStatus::Uploading
+                )
+            })
+            .unwrap_or(false)
+        {
+            return Json(TransferRequestResponse {
+                ok: false,
+                transfer_id: None,
+                status: None,
+                error_code: Some("receiver_busy".to_string()),
+                message: Some("接收方当前正在处理其他传输任务".to_string()),
+            })
+            .into_response();
+        }
+        *pending_guard = Some(pending.clone());
+    } else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(TransferRequestResponse {
+                ok: false,
+                transfer_id: None,
+                status: None,
+                error_code: Some("state_lock_failed".to_string()),
+                message: Some("接收方状态不可用".to_string()),
+            }),
+        )
+            .into_response();
+    }
+
     if let Ok(mut tasks) = ctx.state.tasks.lock() {
         tasks.push(task);
     }

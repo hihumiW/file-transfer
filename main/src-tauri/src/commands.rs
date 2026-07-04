@@ -224,6 +224,7 @@ pub async fn send_files(
     target_address: String,
     files: Vec<LocalFile>,
 ) -> Result<AppSnapshot, String> {
+    println!("into send_files!");
     if files.is_empty() {
         return Err("请选择要发送的文件".to_string());
     }
@@ -233,15 +234,19 @@ pub async fn send_files(
 
     // 目标地址每次发送前重新规范化，避免前端传入未补协议或端口的字符串。
     let parsed = normalize_address(&target_address)?;
-    let local_device = {
-        let config = state
-            .config
-            .lock()
-            .map_err(|_| "配置锁已损坏".to_string())?;
-        let save_dir = state.save_dir()?;
-        build_device_info(&config, &save_dir)
-    };
+    println!("parsed {:?}", parsed);
 
+    // 先克隆配置再释放锁，避免后续调用 state.save_dir() 时重复申请同一个 Mutex。
+    let config = state
+        .config
+        .lock()
+        .map_err(|_| "配置锁已损坏".to_string())?
+        .clone();
+    // save_dir 内部也会读取配置锁；此时上面的锁已经释放，不会出现自锁死等。
+    let save_dir = state.save_dir()?;
+    // local_device 会写入发送请求，让接收方确认弹窗能展示真实发送方设备名。
+    let local_device = build_device_info(&config, &save_dir);
+    println!("local_device {:?}", local_device);
     // 发送请求只包含文件元数据；真正的文件内容会在接收方 accepted 后再上传。
     let transfer_files = files
         .iter()
@@ -255,6 +260,7 @@ pub async fn send_files(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
+    println!("transfer_files : {:?}", transfer_files);
     let total_bytes = transfer_files.iter().map(|file| file.size).sum::<u64>();
 
     let client = Client::builder()
@@ -268,7 +274,7 @@ pub async fn send_files(
         files: transfer_files.clone(),
         total_bytes,
     };
-
+    println!("before request {:?}", request);
     // 第一步：向接收端提交传输请求，让接收端创建 pending 任务并弹出确认 UI。
     let response = client
         .post(format!("{}/api/transfer/request", parsed.address))

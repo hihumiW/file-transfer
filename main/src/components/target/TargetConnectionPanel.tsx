@@ -53,22 +53,24 @@ export function TargetConnectionPanel({
           {snapshot.recentDevices.map((device) => (
             <div
               key={device.address}
-              className="grid min-h-14 grid-cols-[28px_minmax(0,1fr)_auto_auto] items-center gap-2 rounded-lg border border-border-subtle bg-surface px-3 py-2"
+              className="grid min-h-14 grid-cols-[minmax(0,1fr)_auto] items-stretch overflow-hidden rounded-lg border border-border-subtle bg-surface transition-colors focus-within:border-primary/50 hover:border-primary/40 hover:bg-primary-hover"
             >
-              <Monitor className="h-4 w-4 text-fg-muted" />
-              <Button
-                variant="ghost"
-                isDisabled={activeSendLocked}
-                className="h-auto min-w-0 justify-start p-0"
-                onPress={() => onConnect(device.address)}
+              {/* 将最近设备主体做成整行按钮，扩大可点击热区并统一 hover 反馈。 */}
+              <button
+                type="button"
+                disabled={activeSendLocked}
+                className="grid min-h-14 min-w-0 appearance-none grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-2 border-0 bg-transparent px-3 py-2 text-left outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => onConnect(device.address)}
               >
-                <span className="grid min-w-0 text-left">
+                <Monitor className="h-4 w-4 text-fg-muted" />
+                <span className="grid min-w-0">
                   <span className="text-ellipsis text-[14px] font-medium text-fg-default">{device.deviceName}</span>
                   <span className="text-ellipsis text-[12px] text-fg-muted">{device.address}</span>
                 </span>
-              </Button>
-              <span className="whitespace-nowrap text-[12px] text-fg-muted">{formatTime(device.lastSuccessAt)}</span>
-              <Button isIconOnly size="sm" variant="ghost" onPress={() => onDeleteRecent(device.address)} aria-label="删除最近连接">
+                <span className="whitespace-nowrap text-[12px] text-fg-muted">{formatTime(device.lastSuccessAt)}</span>
+              </button>
+              {/* 删除是独立操作，避免按钮嵌套，同时维持整行主体的点击体验。 */}
+              <Button isIconOnly size="sm" variant="ghost" className="m-2 self-center" onPress={() => onDeleteRecent(device.address)} aria-label="删除最近连接">
                 <Trash2 className="h-4 w-4" />
               </Button>
             </div>

@@ -103,9 +103,11 @@ export function useLanTransferApp() {
     store.setBusyMessage("正在等待对方确认...");
     try {
       const next = await sendFiles(store.target.address, store.files);
+      console.log(next, 'next');
       store.setSnapshot(next);
       store.clearFiles();
     } catch (err) {
+      console.log('errrrrrrrr-');
       store.setBusyMessage(String(err));
       store.setSnapshot(await getAppSnapshot());
     }
