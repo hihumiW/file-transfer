@@ -26,9 +26,15 @@ export function useLanTransferApp() {
   useEffect(() => {
     refresh();
 
-    const progressUnlisten = listen<ProgressEvent>("transfer-progress", (event) => {
+    const progressUnlisten = listen<ProgressEvent>("transfer-progress", async (event) => {
       store.applyProgress(event.payload);
-      refresh();
+      await refresh();
+      const current = useAppStore.getState();
+      const task = current.snapshot?.tasks.find((item) => item.id === event.payload.transferId);
+      if (task?.direction === "send") {
+        current.clearFiles();
+        current.setBusyMessage(undefined);
+      }
     });
     const incomingUnlisten = listen<IncomingTransferEvent>("incoming-transfer", (event) => {
       store.setIncomingTransfer(event.payload.transfer);
@@ -106,6 +112,7 @@ export function useLanTransferApp() {
       console.log(next, 'next');
       store.setSnapshot(next);
       store.clearFiles();
+      store.setBusyMessage(undefined);
     } catch (err) {
       console.log('errrrrrrrr-');
       store.setBusyMessage(String(err));

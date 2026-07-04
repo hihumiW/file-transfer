@@ -100,7 +100,9 @@ export function TransferTasksPanel({
                 className="rounded-lg border border-border-subtle bg-surface p-3 hover:bg-surface-muted"
               >
                 <div className="grid grid-cols-[24px_minmax(0,1fr)_auto] items-start gap-2.5">
-                  <TaskDirectionIcon task={task} />
+                  <div className="self-center">
+                         <TaskDirectionIcon task={task}  />
+                  </div>
                   <div className="min-w-0">
                     <div className="text-ellipsis text-[13px] font-semibold text-fg-default">
                       {task.files[0]?.name ?? "未知文件"}
