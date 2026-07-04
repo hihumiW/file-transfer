@@ -109,6 +109,7 @@ export type ProgressEvent = {
   transferredBytes: number;
   totalBytes: number;
   percent: number;
+  status?: TransferStatus;
 };
 
 export type IncomingTransferEvent = {

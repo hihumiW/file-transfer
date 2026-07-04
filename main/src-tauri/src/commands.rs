@@ -8,8 +8,10 @@ use std::{
     time::Duration,
 };
 
+const PROGRESS_EMIT_STEP_BYTES: u64 = 1024 * 1024;
+
 use crate::{
-    config::ensure_writable_dir,
+    config::{ensure_writable_dir, is_save_dir_available},
     device::{
         build_device_info, list_network_addresses, now_millis, upsert_recent_device,
         validate_device_name,
@@ -286,6 +288,7 @@ pub async fn send_files(
         .json::<TransferRequestResponse>()
         .await
         .map_err(|err| format!("解析传输请求响应失败: {err}"))?;
+    println!("transfer request response: {:?}", response);
 
     if !response.ok {
         return Err(response
@@ -317,6 +320,7 @@ pub async fn send_files(
 
     // 第二步：轮询接收端状态。只有对方 accepted 后才进入真正上传。
     wait_until_accepted(&client, &parsed.address, &transfer_id, &state).await?;
+    println!("transfer {transfer_id} accepted, start upload");
     // 第三步：按文件列表顺序逐个流式上传，符合 v0.1 不并发上传的设计。
     upload_files(
         &client,
@@ -328,6 +332,7 @@ pub async fn send_files(
         total_bytes,
     )
     .await?;
+    println!("transfer {transfer_id} upload_files returned");
 
     snapshot(&state)
 }
@@ -391,7 +396,7 @@ fn snapshot(state: &Arc<AppState>) -> Result<AppSnapshot, String> {
         .map_err(|_| "配置锁已损坏".to_string())?
         .clone();
     let save_dir = state.save_dir()?;
-    let save_dir_available = ensure_writable_dir(&save_dir).is_ok();
+    let save_dir_available = is_save_dir_available(&save_dir);
     let addresses = list_network_addresses();
     // 如果用户手动选过 IP 且它仍在候选列表中，就优先使用；否则回退到推荐地址。
     let selected_ip = addresses
@@ -578,6 +583,7 @@ async fn upload_files(
         // AtomicU64 用来在 stream 闭包里记录当前文件已发送字节数。
         // 这里使用 Arc，是因为闭包需要拥有一份可跨异步边界共享的计数器。
         let sent_for_file = Arc::new(AtomicU64::new(0));
+        let last_emitted_for_file = Arc::new(AtomicU64::new(0));
         let app_for_stream = app.clone();
         let state_for_stream = state.clone();
         let transfer_id_for_stream = transfer_id.to_string();
@@ -600,22 +606,31 @@ async fn upload_files(
                 transferred_before_file.saturating_add(sent),
                 total_bytes,
             );
-            let _ = app_for_stream.emit(
-                "transfer-progress",
-                ProgressEvent {
-                    transfer_id: transfer_id_for_stream.clone(),
-                    file_name: file_name_for_stream.clone(),
-                    file_index: file_number,
-                    file_total,
-                    transferred_bytes: sent,
-                    total_bytes: file_size,
-                    percent: percent(sent, file_size),
-                },
-            );
+            let last_emitted = last_emitted_for_file.load(Ordering::SeqCst);
+            if sent == file_size || sent.saturating_sub(last_emitted) >= PROGRESS_EMIT_STEP_BYTES {
+                last_emitted_for_file.store(sent, Ordering::SeqCst);
+                let _ = app_for_stream.emit(
+                    "transfer-progress",
+                    ProgressEvent {
+                        transfer_id: transfer_id_for_stream.clone(),
+                        file_name: file_name_for_stream.clone(),
+                        file_index: file_number,
+                        file_total,
+                        transferred_bytes: sent,
+                        total_bytes: file_size,
+                        percent: percent(sent, file_size),
+                        status: Some(TransferStatus::Uploading),
+                    },
+                );
+            }
             chunk
         });
 
         // 这里把 transferId 和 fileIndex 放在 query 中，让接收端知道这个 body 属于哪个任务和第几个文件。
+        println!(
+            "upload request start transfer={} file_index={} name={} size={}",
+            transfer_id, index, file.name, file.size
+        );
         client
             .post(format!(
                 "{target}/api/transfer/upload?transferId={transfer_id}&fileIndex={index}"
@@ -626,6 +641,10 @@ async fn upload_files(
             .map_err(|err| map_connection_error(&err))?
             .error_for_status()
             .map_err(|err| format!("上传失败 {}: {err}", file.name))?;
+        println!(
+            "upload request finished transfer={} file_index={} name={}",
+            transfer_id, index, file.name
+        );
 
         // 单个文件请求完成后，再把任务总进度校准到该文件大小，避免 chunk 事件丢失导致进度不满。
         transferred = transferred.saturating_add(file.size).min(total_bytes);
@@ -640,11 +659,29 @@ async fn upload_files(
                 transferred_bytes: transferred,
                 total_bytes,
                 percent: percent(transferred, total_bytes),
+                status: Some(TransferStatus::Uploading),
             },
         );
     }
 
     set_task_status(state, transfer_id, TransferStatus::Completed, None);
+    println!("send task completed transfer={transfer_id}");
+    let _ = app.emit(
+        "transfer-progress",
+        ProgressEvent {
+            transfer_id: transfer_id.to_string(),
+            file_name: files
+                .last()
+                .map(|file| file.name.clone())
+                .unwrap_or_else(|| "未知文件".to_string()),
+            file_index: files.len(),
+            file_total: files.len(),
+            transferred_bytes: total_bytes,
+            total_bytes,
+            percent: 100,
+            status: Some(TransferStatus::Completed),
+        },
+    );
     Ok(())
 }
 

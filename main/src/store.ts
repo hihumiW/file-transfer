@@ -52,18 +52,23 @@ export const useAppStore = create<AppStore>((set) => ({
       return {
         snapshot: {
           ...state.snapshot,
-          tasks: state.snapshot.tasks.map((task) =>
-            task.id === event.transferId
-              ? {
-                  ...task,
-                  transferredBytes:
-                    event.totalBytes === task.totalBytes
-                      ? event.transferredBytes
-                      : Math.min(task.totalBytes, task.transferredBytes + event.transferredBytes),
-                  status: percent(event.transferredBytes, event.totalBytes) >= 100 ? task.status : "uploading",
-                }
-              : task,
-          ),
+          tasks: state.snapshot.tasks.map((task) => {
+            if (task.id !== event.transferId) return task;
+
+            const completedBeforeCurrentFile = task.files
+              .slice(0, Math.max(event.fileIndex - 1, 0))
+              .reduce((sum, file) => sum + file.size, 0);
+            const nextTransferredBytes =
+              event.totalBytes === task.totalBytes
+                ? event.transferredBytes
+                : completedBeforeCurrentFile + event.transferredBytes;
+
+            return {
+              ...task,
+              transferredBytes: Math.min(task.totalBytes, nextTransferredBytes),
+              status: event.status ?? (percent(event.transferredBytes, event.totalBytes) >= 100 ? task.status : "uploading"),
+            };
+          }),
         },
       };
     }),

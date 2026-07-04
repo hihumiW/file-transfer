@@ -24,6 +24,8 @@ use crate::{
     transfer::AppState,
 };
 
+const PROGRESS_EMIT_STEP_BYTES: u64 = 1024 * 1024;
+
 // HttpContext 是 axum handler 的共享上下文。
 // state 用来读写任务和配置，app 用来向本机 React 前端发送 Tauri event。
 #[derive(Clone)]
@@ -344,6 +346,10 @@ async fn api_transfer_upload(
         return (StatusCode::BAD_REQUEST, "file index out of range").into_response();
     };
 
+    println!(
+        "receive upload start transfer={} file_index={} name={} size={}",
+        pending.transfer_id, query.file_index, file_meta.name, file_meta.size
+    );
     // 真正的保存逻辑放到 save_upload_stream，handler 只负责把成功/失败转成 HTTP 响应。
     match save_upload_stream(
         &ctx,
@@ -355,10 +361,15 @@ async fn api_transfer_upload(
     .await
     {
         Ok(()) => {
+            println!(
+                "receive upload saved transfer={} file_index={} name={}",
+                pending.transfer_id, query.file_index, file_meta.name
+            );
             // 单文件写入完成后，累加任务总进度。
             mark_file_completed(&ctx.state, &pending.transfer_id, file_meta.size);
             // 如果这是最后一个文件，整个多文件任务就可以进入 Completed。
             if query.file_index + 1 == pending.files.len() {
+                println!("receive task completed transfer={}", pending.transfer_id);
                 set_task_status(
                     &ctx.state,
                     &pending.transfer_id,
@@ -376,12 +387,17 @@ async fn api_transfer_upload(
                         transferred_bytes: pending.total_bytes,
                         total_bytes: pending.total_bytes,
                         percent: 100,
+                        status: Some(TransferStatus::Completed),
                     },
                 );
             }
             StatusCode::OK.into_response()
         }
         Err(err) => {
+            println!(
+                "receive upload failed transfer={} file_index={} error={}",
+                pending.transfer_id, query.file_index, err
+            );
             // 任一文件保存失败都会让整个任务失败，符合 v0.1 的“全收或全失败”模型。
             set_task_status(
                 &ctx.state,
@@ -413,17 +429,28 @@ async fn save_upload_stream(
         .map_err(|err| format!("创建文件失败 {}: {err}", target_path.display()))?;
 
     let mut received = 0_u64;
+    let mut last_emitted = 0_u64;
     let mut stream = body.into_data_stream();
 
     // axum 的 Body 是一个异步流。这里逐块写入文件，避免把大文件完整读进内存。
     // 每个 chunk 都是网络层到达的一段字节；真实大小由 hyper/axum 决定，我们只需要
     // 处理“成功拿到字节 -> 写入磁盘 -> 更新进度”这条链路。
-    while let Some(chunk) = stream.next().await {
+    while received < file_meta.size {
+        let Some(chunk) = stream.next().await else {
+            return Err(format!(
+                "接收文件不完整 {}: 已接收 {} 字节，期望 {} 字节",
+                file_meta.name, received, file_meta.size
+            ));
+        };
         let chunk = chunk.map_err(|err| format!("读取上传数据失败: {err}"))?;
-        file.write_all(&chunk)
+
+        // 发送端可能不会立即关闭 HTTP body；接收端按协商的文件大小收满即可结束本文件。
+        let remaining = file_meta.size.saturating_sub(received) as usize;
+        let bytes_to_write = remaining.min(chunk.len());
+        file.write_all(&chunk[..bytes_to_write])
             .await
             .map_err(|err| format!("写入文件失败 {}: {err}", target_path.display()))?;
-        received += chunk.len() as u64;
+        received += bytes_to_write as u64;
 
         // 接收端进度按当前文件计算；任务总进度会在 mark_file_completed 中按文件累加。
         let percent = if file_meta.size == 0 {
@@ -431,6 +458,25 @@ async fn save_upload_stream(
         } else {
             ((received.saturating_mul(100) / file_meta.size).min(100)) as u8
         };
+        if received == file_meta.size || received.saturating_sub(last_emitted) >= PROGRESS_EMIT_STEP_BYTES {
+            last_emitted = received;
+            let _ = ctx.app.emit(
+                "transfer-progress",
+                ProgressEvent {
+                    transfer_id: transfer_id.to_string(),
+                    file_name: file_meta.name.clone(),
+                    file_index: file_index + 1,
+                    file_total: 1,
+                    transferred_bytes: received,
+                    total_bytes: file_meta.size,
+                    percent,
+                    status: Some(TransferStatus::Uploading),
+                },
+            );
+        }
+    }
+
+    if file_meta.size == 0 {
         let _ = ctx.app.emit(
             "transfer-progress",
             ProgressEvent {
@@ -438,17 +484,26 @@ async fn save_upload_stream(
                 file_name: file_meta.name.clone(),
                 file_index: file_index + 1,
                 file_total: 1,
-                transferred_bytes: received,
-                total_bytes: file_meta.size,
-                percent,
+                transferred_bytes: 0,
+                total_bytes: 0,
+                percent: 100,
+                status: Some(TransferStatus::Uploading),
             },
         );
     }
 
+    println!(
+        "receive stream complete transfer={} file_index={} name={} received={} expected={}",
+        transfer_id, file_index, file_meta.name, received, file_meta.size
+    );
     // flush 确保缓冲区内容尽量写入系统，及时暴露磁盘写入错误。
     file.flush()
         .await
         .map_err(|err| format!("刷新文件失败 {}: {err}", target_path.display()))?;
+    println!(
+        "receive stream flushed transfer={} file_index={} name={}",
+        transfer_id, file_index, file_meta.name
+    );
     Ok(())
 }
 

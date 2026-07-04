@@ -98,3 +98,15 @@ pub fn ensure_writable_dir(path: &Path) -> Result<(), String> {
     let _ = fs::remove_file(probe);
     Ok(())
 }
+
+// is_save_dir_available 是 UI 快照使用的轻量检查。
+// 高频刷新时不能写探针文件，否则资源管理器会反复看到临时文件出现和消失。
+pub fn is_save_dir_available(path: &Path) -> bool {
+    if fs::create_dir_all(path).is_err() {
+        return false;
+    }
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    metadata.is_dir() && !metadata.permissions().readonly()
+}

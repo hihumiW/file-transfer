@@ -7,7 +7,7 @@ use std::{
 use gethostname::gethostname;
 
 use crate::{
-    config::{ensure_writable_dir, AppConfig},
+    config::{is_save_dir_available, AppConfig},
     models::{
         DeviceInfo, NetworkAddress, NetworkKind, RecentDevice, APP_VERSION, DEVICE_NAME_MAX_LEN,
         PROTOCOL_VERSION,
@@ -62,7 +62,7 @@ pub fn build_device_info(config: &AppConfig, save_dir: &PathBuf) -> DeviceInfo {
         device_name: resolved_device_name(config),
         version: APP_VERSION.to_string(),
         protocol_version: PROTOCOL_VERSION.to_string(),
-        receive_enabled: ensure_writable_dir(save_dir).is_ok(),
+        receive_enabled: is_save_dir_available(save_dir),
     }
 }
 

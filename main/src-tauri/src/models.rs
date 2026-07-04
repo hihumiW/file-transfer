@@ -218,6 +218,8 @@ pub struct ProgressEvent {
     pub transferred_bytes: u64,
     pub total_bytes: u64,
     pub percent: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<TransferStatus>,
 }
 
 // IncomingTransferEvent 是接收端收到传输请求后通知前端弹出确认 UI 的事件。

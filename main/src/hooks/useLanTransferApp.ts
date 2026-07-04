@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -22,19 +22,48 @@ export function useLanTransferApp() {
   const store = useAppStore();
   const [editingName, setEditingName] = useState(false);
   const [deviceNameDraft, setDeviceNameDraft] = useState("");
+  const refreshTimerRef = useRef<number | undefined>(undefined);
+  const refreshInFlightRef = useRef(false);
+
+  function queueRefresh(immediate = false) {
+    if (refreshTimerRef.current !== undefined) {
+      window.clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = undefined;
+    }
+
+    const run = async () => {
+      if (refreshInFlightRef.current) return;
+      refreshInFlightRef.current = true;
+      try {
+        await refresh();
+      } finally {
+        refreshInFlightRef.current = false;
+      }
+    };
+
+    if (immediate) {
+      void run();
+      return;
+    }
+
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = undefined;
+      void run();
+    }, 800);
+  }
 
   useEffect(() => {
     refresh();
 
-    const progressUnlisten = listen<ProgressEvent>("transfer-progress", async (event) => {
+    const progressUnlisten = listen<ProgressEvent>("transfer-progress", (event) => {
       store.applyProgress(event.payload);
-      await refresh();
       const current = useAppStore.getState();
       const task = current.snapshot?.tasks.find((item) => item.id === event.payload.transferId);
-      if (task?.direction === "send") {
+      if (task?.direction === "send" || current.busyMessage === "正在等待对方确认...") {
         current.clearFiles();
         current.setBusyMessage(undefined);
       }
+      queueRefresh(event.payload.status === "completed" || event.payload.status === "failed");
     });
     const incomingUnlisten = listen<IncomingTransferEvent>("incoming-transfer", (event) => {
       store.setIncomingTransfer(event.payload.transfer);
@@ -52,6 +81,9 @@ export function useLanTransferApp() {
       progressUnlisten.then((unlisten) => unlisten());
       incomingUnlisten.then((unlisten) => unlisten());
       dragDropUnlisten.then((unlisten) => unlisten());
+      if (refreshTimerRef.current !== undefined) {
+        window.clearTimeout(refreshTimerRef.current);
+      }
     };
   }, []);
 
