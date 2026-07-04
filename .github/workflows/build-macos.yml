@@ -4,6 +4,16 @@ name: build-macos
 # 只允许手动触发，避免每次提交都消耗 macOS runner 时间。
 on:
   workflow_dispatch:
+    inputs:
+      build_profile:
+        # 选择构建类型：debug 便于测试和调试，release 更接近正式分发。
+        description: "选择 macOS 安装包构建类型"
+        required: true
+        default: debug
+        type: choice
+        options:
+          - debug
+          - release
 
 # 默认只给仓库内容读取权限；本工作流只上传 workflow artifacts，不创建 Release。
 permissions:
@@ -44,8 +54,22 @@ jobs:
         run: npm ci
         working-directory: main
 
-      # 第六步：构建 macOS Apple Silicon 包，并使用 ad-hoc signing 生成内部测试包。
-      - name: Build Tauri app for Apple Silicon
+      # 第六步：构建 macOS Apple Silicon 调试包，并使用 ad-hoc signing 生成内部测试包。
+      - name: Build Tauri debug app for Apple Silicon
+        if: ${{ inputs.build_profile == 'debug' }}
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: "-"
+        with:
+          projectPath: main
+          args: --target aarch64-apple-darwin --debug
+          uploadWorkflowArtifacts: true
+          workflowArtifactNamePattern: macos-apple-silicon-debug-[bundle]
+
+      # 第七步：按需构建 macOS Apple Silicon 发布包，保留给后续更接近正式分发的验证。
+      - name: Build Tauri release app for Apple Silicon
+        if: ${{ inputs.build_profile == 'release' }}
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -54,4 +78,4 @@ jobs:
           projectPath: main
           args: --target aarch64-apple-darwin
           uploadWorkflowArtifacts: true
-          workflowArtifactNamePattern: macos-apple-silicon-[bundle]
+          workflowArtifactNamePattern: macos-apple-silicon-release-[bundle]
