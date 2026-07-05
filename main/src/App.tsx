@@ -68,6 +68,7 @@ function App() {
         }
         modal={
           <>
+            {app.targetTesting && <ConnectingOverlay />}
             <ReceiveRequestModal transfer={app.snapshot.pendingTransfer} onRespond={app.handleRespond} />
             <EditDeviceNameModal
               isOpen={app.editingName}
@@ -80,6 +81,24 @@ function App() {
         }
         toast={<AppToast message={app.busyMessage} onClose={() => app.setBusyMessage(undefined)} />}
     />
+  );
+}
+
+function ConnectingOverlay() {
+  return (
+    // 连接测试期间锁定整个界面，避免用户快速切换多个最近设备导致目标状态交错。
+    <div className="fixed inset-0 z-[60] grid place-items-center bg-black/45 px-6 backdrop-blur-sm">
+      <section
+        aria-live="polite"
+        className="grid w-full max-w-[320px] justify-items-center gap-3 rounded-2xl border border-border-subtle bg-surface px-6 py-7 shadow-xl"
+      >
+        <Spinner />
+        <div className="text-center">
+          <h3 className="m-0 text-[15px] font-semibold text-fg-default">正在连接目标设备</h3>
+          <p className="mt-1 mb-0 text-[12px] text-fg-muted">请稍候，正在确认对方服务状态...</p>
+        </div>
+      </section>
+    </div>
   );
 }
 

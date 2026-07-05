@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { AppSnapshot, LocalFile, PendingTransfer, ProgressEvent, TargetConnection } from "./types";
 import { percent } from "./format";
 
-type TaskFilter = "all" | "send" | "receive" | "completed";
+type TaskFilter = "transferring" | "send" | "receive" | "completed";
 
 type AppStore = {
   snapshot?: AppSnapshot;
@@ -31,7 +31,7 @@ export const useAppStore = create<AppStore>((set) => ({
   targetInput: "",
   targetTesting: false,
   files: [],
-  filter: "all",
+  filter: "transferring",
   setSnapshot: (snapshot) => set({ snapshot }),
   setTargetInput: (targetInput) => set({ targetInput, targetError: undefined }),
   setTarget: (target) => set({ target, targetInput: target?.address ?? "" }),

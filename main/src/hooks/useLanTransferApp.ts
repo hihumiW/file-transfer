@@ -93,13 +93,19 @@ export function useLanTransferApp() {
   );
   const filteredTasks = useMemo(() => {
     const tasks = store.snapshot?.tasks ?? [];
+    // 传输中列表聚合等待确认、已确认和上传中任务，便于用户只看当前活跃传输。
+    if (store.filter === "transferring") {
+      return tasks.filter((task) => ["pending", "accepted", "uploading"].includes(task.status));
+    }
+    // 已完成列表收纳所有终态任务，包括成功、失败和拒绝。
     if (store.filter === "completed") {
       return tasks.filter((task) => ["completed", "failed", "rejected"].includes(task.status));
     }
+    // 发送和接收列表按方向过滤，保留该方向的完整运行期任务。
     if (store.filter === "send" || store.filter === "receive") {
       return tasks.filter((task) => task.direction === store.filter);
     }
-    return tasks;
+    return [];
   }, [store.filter, store.snapshot?.tasks]);
 
   async function refresh() {

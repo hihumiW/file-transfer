@@ -14,7 +14,7 @@ import { Panel } from "../common/Panel";
 import { formatBytes, percent } from "../../format";
 import type { TransferStatus, TransferTask } from "../../types";
 
-type TaskFilter = "all" | "send" | "receive" | "completed";
+type TaskFilter = "transferring" | "send" | "receive" | "completed";
 
 const statusText: Record<TransferStatus, string> = {
   pending: "等待确认",
@@ -62,8 +62,8 @@ export function TransferTasksPanel({
         >
           <Tabs.ListContainer>
             <Tabs.List aria-label="传输任务筛选">
-              <Tabs.Tab id="all">
-                全部
+              <Tabs.Tab id="transferring">
+                传输中
                 <Tabs.Indicator />
               </Tabs.Tab>
               <Tabs.Tab id="send">
@@ -94,6 +94,9 @@ export function TransferTasksPanel({
           )}
           {tasks.map((task) => {
             const taskPercent = percent(task.transferredBytes, task.totalBytes);
+            const taskTitle = task.files.length > 1
+              ? `${task.files.length} 个文件`
+              : task.files[0]?.name ?? "未知文件";
             return (
               <article
                 key={task.id}
@@ -105,7 +108,7 @@ export function TransferTasksPanel({
                   </div>
                   <div className="min-w-0">
                     <div className="text-ellipsis text-[13px] font-semibold text-fg-default">
-                      {task.files[0]?.name ?? "未知文件"}
+                      {taskTitle}
                     </div>
                     <div className="text-ellipsis text-[12px] text-fg-muted">
                       {task.direction === "send"
@@ -116,6 +119,20 @@ export function TransferTasksPanel({
                   </div>
                   <StatusChip status={task.status} />
                 </div>
+                {/* 多文件任务保持一条传输任务，同时展开展示每个文件，避免用户误以为文件被吞掉。 */}
+                {task.files.length > 1 && (
+                  <div className="mt-2 space-y-1 rounded-md bg-surface-muted px-2 py-1.5">
+                    {task.files.map((file) => (
+                      <div
+                        key={file.name}
+                        className="grid min-h-6 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-[12px]"
+                      >
+                        <span className="text-ellipsis text-fg-default">{file.name}</span>
+                        <span className="whitespace-nowrap text-fg-muted">{formatBytes(file.size)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {task.status === "uploading" && (
                   <ProgressBar
                     aria-label="传输进度"
